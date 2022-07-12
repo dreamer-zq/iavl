@@ -2,7 +2,6 @@ package iavl
 
 import (
 	"bytes"
-	"container/list"
 	"fmt"
 	"sort"
 	"sync"
@@ -15,6 +14,10 @@ const (
 	int64Size = 8
 	hashSize  = tmhash.Size
 )
+
+// expose nodeDB so that state sync can directly save serialized node into
+// db without restore it as iavl tree first
+type NodeDB = nodeDB
 
 var (
 	// All node keys are prefixed with the byte 'n'. This ensures no collision is
@@ -38,19 +41,13 @@ type nodeDB struct {
 	batch dbm.Batch  // Batched writing buffer.
 
 	latestVersion  int64
-	nodeCache      map[string]*list.Element // Node cache.
-	nodeCacheSize  int                      // Node cache size limit in elements.
-	nodeCacheQueue *list.List               // LRU queue of cache elements. Used for deletion.
 }
 
-func newNodeDB(db dbm.DB, cacheSize int) *nodeDB {
+func NewNodeDB(db dbm.DB, cacheSize int) *nodeDB {
 	ndb := &nodeDB{
 		db:             db,
 		batch:          db.NewBatch(),
 		latestVersion:  0, // initially invalid
-		nodeCache:      make(map[string]*list.Element),
-		nodeCacheSize:  cacheSize,
-		nodeCacheQueue: list.New(),
 	}
 	return ndb
 }
@@ -63,13 +60,6 @@ func (ndb *nodeDB) GetNode(hash []byte) *Node {
 
 	if len(hash) == 0 {
 		panic("nodeDB.GetNode() requires hash")
-	}
-
-	// Check the cache.
-	if elem, ok := ndb.nodeCache[string(hash)]; ok {
-		// Already exists. Move to back of nodeCacheQueue.
-		ndb.nodeCacheQueue.MoveToBack(elem)
-		return elem.Value.(*Node)
 	}
 
 	// Doesn't exist, load.
@@ -85,8 +75,6 @@ func (ndb *nodeDB) GetNode(hash []byte) *Node {
 
 	node.hash = hash
 	node.persisted = true
-	ndb.cacheNode(node)
-
 	return node
 }
 
@@ -103,15 +91,15 @@ func (ndb *nodeDB) SaveNode(node *Node) {
 	}
 
 	// Save node bytes to db.
-	buf := new(bytes.Buffer)
-	if err := node.writeBytes(buf); err != nil {
+	var buf bytes.Buffer
+	buf.Grow(node.aminoSize())
+	if err := node.writeBytes(&buf); err != nil {
 		panic(err)
 	}
 	ndb.batch.Set(ndb.nodeKey(node.hash), buf.Bytes())
 	debug("BATCH SAVE %X %p\n", node.hash, node)
 
 	node.persisted = true
-	ndb.cacheNode(node)
 }
 
 // Has checks if a hash exists in the database.
@@ -146,10 +134,6 @@ func (ndb *nodeDB) SaveBranch(node *Node) []byte {
 
 	node._hash()
 	ndb.SaveNode(node)
-
-	node.leftNode = nil
-	node.rightNode = nil
-
 	return node.hash
 }
 
@@ -211,7 +195,6 @@ func (ndb *nodeDB) deleteOrphans(version int64) {
 		if predecessor < fromVersion || fromVersion == toVersion {
 			debug("DELETE predecessor:%v fromVersion:%v toVersion:%v %X\n", predecessor, fromVersion, toVersion, hash)
 			ndb.batch.Delete(ndb.nodeKey(hash))
-			ndb.uncacheNode(hash)
 		} else {
 			debug("MOVE predecessor:%v fromVersion:%v toVersion:%v %X\n", predecessor, fromVersion, toVersion, hash)
 			ndb.saveOrphan(hash, fromVersion, predecessor)
@@ -304,26 +287,6 @@ func (ndb *nodeDB) traversePrefix(prefix []byte, fn func(k, v []byte)) {
 	}
 }
 
-func (ndb *nodeDB) uncacheNode(hash []byte) {
-	if elem, ok := ndb.nodeCache[string(hash)]; ok {
-		ndb.nodeCacheQueue.Remove(elem)
-		delete(ndb.nodeCache, string(hash))
-	}
-}
-
-// Add a node to the cache and pop the least recently used node if we've
-// reached the cache size limit.
-func (ndb *nodeDB) cacheNode(node *Node) {
-	elem := ndb.nodeCacheQueue.PushBack(node)
-	ndb.nodeCache[string(node.hash)] = elem
-
-	if ndb.nodeCacheQueue.Len() > ndb.nodeCacheSize {
-		oldest := ndb.nodeCacheQueue.Front()
-		hash := ndb.nodeCacheQueue.Remove(oldest).(*Node).hash
-		delete(ndb.nodeCache, string(hash))
-	}
-}
-
 // Write to disk.
 func (ndb *nodeDB) Commit() {
 	ndb.mtx.Lock()
@@ -350,23 +313,23 @@ func (ndb *nodeDB) getRoots() (map[int64][]byte, error) {
 
 // SaveRoot creates an entry on disk for the given root, so that it can be
 // loaded later.
-func (ndb *nodeDB) SaveRoot(root *Node, version int64) error {
+func (ndb *nodeDB) SaveRoot(root *Node, version int64, isFirstVersion bool) error {
 	if len(root.hash) == 0 {
 		panic("Hash should not be empty")
 	}
-	return ndb.saveRoot(root.hash, version)
+	return ndb.saveRoot(root.hash, version, isFirstVersion)
 }
 
 // SaveEmptyRoot creates an entry on disk for an empty root.
-func (ndb *nodeDB) SaveEmptyRoot(version int64) error {
-	return ndb.saveRoot([]byte{}, version)
+func (ndb *nodeDB) SaveEmptyRoot(version int64, isFirstVersion bool) error {
+	return ndb.saveRoot([]byte{}, version, isFirstVersion)
 }
 
-func (ndb *nodeDB) saveRoot(hash []byte, version int64) error {
+func (ndb *nodeDB) saveRoot(hash []byte, version int64, isFirstVersion bool) error {
 	ndb.mtx.Lock()
 	defer ndb.mtx.Unlock()
 
-	if version != ndb.getLatestVersion()+1 {
+	if !isFirstVersion && version != ndb.getLatestVersion()+1 {
 		return fmt.Errorf("Must save consecutive versions. Expected %d, got %d", ndb.getLatestVersion()+1, version)
 	}
 
