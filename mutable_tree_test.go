@@ -2,6 +2,7 @@ package iavl
 
 import (
 	"bytes"
+	"encoding/hex"
 	"fmt"
 	"runtime"
 	"strconv"
@@ -105,6 +106,54 @@ func TestMutableTree_DeleteVersions(t *testing.T) {
 			require.Equal(t, e.value, val)
 		}
 	}
+}
+
+func TestVersion(t *testing.T) {
+	mdb := db.NewMemDB()
+	tree, err := NewMutableTree(mdb, 1000)
+	require.NoError(t, err)
+
+	tree.Set([]byte("key1_1"), []byte("value1_1"))
+	tree.Set([]byte("key2_1"), []byte("value2_1"))
+
+	hash, v1, err := tree.SaveVersion()
+	require.NoError(t, err)
+	require.EqualValues(t, int64(1), v1)
+	fmt.Println("rootHash=", hex.EncodeToString(hash))
+	//fmt.Println(tree.String())
+
+	tree.Set([]byte("key2_2"), []byte("value2_2"))
+	_, v2, err := tree.SaveVersion()
+	require.NoError(t, err)
+	require.EqualValues(t, int64(2), v2)
+	//fmt.Println(tree.String())
+
+	_, value2 := tree.GetVersioned([]byte("key1_1"), v2)
+	//require.NoError(t, err)
+	fmt.Println(string(value2))
+	//require.EqualValues(t, []byte{}, value2)
+
+	tree.DeleteVersion(v1)
+	fmt.Println("delete v=", v1)
+	//fmt.Println("delete v=", v1, "", tree.String()...)
+
+	_, value2 = tree.GetVersioned([]byte("key1_1"), v2)
+	require.NoError(t, err)
+	fmt.Println(string(value2))
+
+	// tree.Set([]byte("key3_3"), []byte("value3_3"))
+	// _, v3, err := tree.SaveVersion()
+	// require.NoError(t, err)
+	// require.EqualValues(t, 3, v3)
+	// fmt.Println(tree.String())
+
+	// tree.DeleteVersion(v2)
+	// fmt.Println(tree.String())
+
+	// value2, err = tree.GetVersioned([]byte("key1_1"), v3)
+	// require.NoError(t, err)
+	// fmt.Println(string(value2))
+
 }
 
 func TestMutableTree_LoadVersion_Empty(t *testing.T) {
