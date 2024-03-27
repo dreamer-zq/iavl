@@ -1030,13 +1030,13 @@ func (tree *MutableTree) deleteVersion(version int64) error {
 	if version <= 0 {
 		return errors.New("version must be greater than 0")
 	}
-	if version == tree.version {
-		return fmt.Errorf("cannot delete latest saved version (%d)", version)
-	}
+	// if version == tree.version {
+	// 	return fmt.Errorf("cannot delete latest saved version (%d)", version)
+	// }
 	if !tree.VersionExists(version) {
 		return ErrVersionDoesNotExist
 	}
-	if err := tree.ndb.DeleteVersion(version, true); err != nil {
+	if err := tree.ndb.DeleteVersion(version, false); err != nil {
 		return err
 	}
 

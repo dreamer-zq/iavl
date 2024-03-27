@@ -23,8 +23,8 @@ const (
 
 func main() {
 	args := os.Args[1:]
-	if len(args) < 3 || (args[0] != "data" && args[0] != "shape" && args[0] != "versions") {
-		fmt.Fprintln(os.Stderr, "Usage: iaviewer <data|shape|versions> <leveldb dir> <prefix> [version number]")
+	if len(args) < 3 || (args[0] != "data" && args[0] != "shape" && args[0] != "versions" && args[0] != "remove") {
+		fmt.Fprintln(os.Stderr, "Usage: iaviewer <data|shape|versions|remove> <leveldb dir> <prefix> [version number]")
 		fmt.Fprintln(os.Stderr, "<prefix> is the prefix of db, and the iavl tree of different modules in cosmos-sdk uses ")
 		fmt.Fprintln(os.Stderr, "different <prefix> to identify, just like \"s/k:gov/\" represents the prefix of gov module")
 		os.Exit(1)
@@ -60,6 +60,8 @@ func main() {
 		PrintShape(tree)
 	case "versions":
 		PrintVersions(tree)
+	case "remove":
+		RemoveAllVersions(tree)
 	}
 }
 
@@ -190,5 +192,20 @@ func PrintVersions(tree *iavl.MutableTree) {
 	fmt.Println("Available versions:")
 	for _, v := range versions {
 		fmt.Printf("  %d\n", v)
+	}
+}
+
+func RemoveAllVersions(tree *iavl.MutableTree) {
+	versions := tree.AvailableVersions()
+	err := tree.DeleteVersionsRange(
+		int64(versions[0]),
+		int64(versions[len(versions)-1]),
+	)
+	if err != nil {
+		panic(err)
+	}
+	err = tree.DeleteVersion(int64(versions[len(versions)-1]))
+	if err != nil {
+		panic(err)
 	}
 }
